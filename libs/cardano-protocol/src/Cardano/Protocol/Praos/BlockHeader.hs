@@ -26,6 +26,7 @@
 module Cardano.Protocol.Praos.BlockHeader (
   Header (Header, headerBody, headerSig),
   HeaderBody (..),
+  IssuerCert (..),
   headerHash,
   headerSize,
 ) where
@@ -59,7 +60,8 @@ import Cardano.Ledger.Hashes (
   extractHash,
   originalBytesSize,
  )
-import Cardano.Ledger.Keys (KeyRole (BlockIssuer), VKey, hashKey)
+import Cardano.Ledger.BaseTypes (StrictMaybe)
+import Cardano.Ledger.Keys (KeyHash, KeyRole (BlockIssuer), VKey)
 import Cardano.Ledger.MemoBytes (
   Mem,
   MemoBytes,
@@ -75,13 +77,43 @@ import Cardano.Protocol.TPraos.BlockHeader (PrevHash)
 import Cardano.Protocol.TPraos.OCert (OCert)
 import Cardano.Slotting.Block (BlockNo)
 import Cardano.Slotting.Slot (SlotNo)
-import Data.Word (Word32)
+import Data.Word (Word32, Word64)
 import GHC.Generics (Generic)
 import Lens.Micro (lens, to)
 import NoThunks.Class (NoThunks (..))
 
 -- | The body of the header is the part which gets hashed to form the hash
 -- chain.
+-- | The block issuer's cold verification key together with its operational
+-- certificate. Carried in a header only when the issuer's certificate is not
+-- yet known to the chain, that is on the first block after a KES key
+-- rotation (or the issuer's first block ever). Every other header identifies
+-- the issuer by key hash and counter alone, and verifiers look the current
+-- certificate up in the chain-dependent state.
+--
+-- Experimental header format for the post-quantum header experiments: with
+-- post-quantum cold keys and KES keys the certificate is several kilobytes,
+-- and it changes only every few weeks.
+data IssuerCert crypto = IssuerCert
+  { icVk :: !(VKey BlockIssuer)
+  -- ^ verification key of block issuer
+  , icOCert :: !(OCert crypto)
+  -- ^ operational certificate
+  }
+  deriving (Generic)
+
+deriving instance Crypto crypto => Show (IssuerCert crypto)
+deriving instance Crypto crypto => Eq (IssuerCert crypto)
+
+instance Crypto crypto => NoThunks (IssuerCert crypto)
+
+instance Crypto crypto => EncCBOR (IssuerCert crypto) where
+  encCBOR IssuerCert {icVk, icOCert} =
+    encode $ Rec IssuerCert !> To icVk !> To icOCert
+
+instance Crypto crypto => DecCBOR (IssuerCert crypto) where
+  decCBOR = decode $ RecD IssuerCert <! From <! mapCoder unCBORGroup From
+
 data HeaderBody crypto = HeaderBody
   { hbBlockNo :: !BlockNo
   -- ^ block number
@@ -89,8 +121,11 @@ data HeaderBody crypto = HeaderBody
   -- ^ block slot
   , hbPrev :: !PrevHash
   -- ^ Hash of the previous block header
-  , hbVk :: !(VKey BlockIssuer)
-  -- ^ verification key of block issuer
+  , hbIssuer :: !(KeyHash BlockIssuer)
+  -- ^ hash of the block issuer's cold verification key
+  , hbIssueNo :: !Word64
+  -- ^ counter of the operational certificate in force for this header; equal
+  -- to the certificate's counter when 'hbOCert' is present
   , hbVrfVk :: !(VRF.VerKeyVRF (VRF crypto))
   -- ^ VRF verification key for block issuer
   , hbVrfRes :: !(VRF.CertifiedVRF (VRF crypto) InputVRF)
@@ -99,8 +134,8 @@ data HeaderBody crypto = HeaderBody
   -- ^ Size of the block body
   , hbBodyHash :: !(Hash.Hash HASH EraIndependentBlockBody)
   -- ^ Hash of block body
-  , hbOCert :: !(OCert crypto)
-  -- ^ operational certificate
+  , hbOCert :: !(StrictMaybe (IssuerCert crypto))
+  -- ^ cold key and operational certificate, only when the KES key rotated
   , hbProtVer :: !ProtVer
   -- ^ protocol version
   }
@@ -179,7 +214,8 @@ instance Crypto crypto => EncCBOR (HeaderBody crypto) where
       { hbBlockNo
       , hbSlotNo
       , hbPrev
-      , hbVk
+      , hbIssuer
+      , hbIssueNo
       , hbVrfVk
       , hbVrfRes
       , hbBodySize
@@ -192,7 +228,8 @@ instance Crypto crypto => EncCBOR (HeaderBody crypto) where
           !> To hbBlockNo
           !> To hbSlotNo
           !> To hbPrev
-          !> To hbVk
+          !> To hbIssuer
+          !> To hbIssueNo
           !> E encodeFixedSized hbVrfVk
           !> To hbVrfRes
           !> To hbBodySize
@@ -208,11 +245,12 @@ instance Crypto crypto => DecCBOR (HeaderBody crypto) where
         <! From
         <! From
         <! From
+        <! From
         <! D decodeFixedSized
         <! From
         <! From
         <! From
-        <! mapCoder unCBORGroup From
+        <! From
         <! From
 
 encodeHeaderRaw ::
@@ -240,7 +278,7 @@ deriving via
 
 instance (Crypto c, Era era) => EraBlockHeader (Header c) era where
   blockIssuerBlockHeaderG =
-    to (\(Block (Header hb _) _) -> hashKey (hbVk hb))
+    to (\(Block (Header hb _) _) -> hbIssuer hb)
   blockHeaderSizeBlockHeaderG =
     to (\(Block hdr _) -> originalBytesSize hdr)
   blockBodySizeBlockHeaderL =
