@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DefaultSignatures #-}
@@ -44,7 +45,19 @@ import NoThunks.Class (NoThunks (..))
 import Quiet
 
 -- | Cryptographic signing algorithm used on Cardano blockchain.
+--
+-- Experimental selection for the post-quantum experiments: with
+-- @-DPQ_DSIGN_MLDSA44@ (normally a @ghc-options@ stanza on this package in
+-- @cabal.project.local@) every ledger signature becomes ML-DSA-44: cold
+-- keys and operational certificates, payment and stake witnesses, genesis
+-- delegate keys. One synonym covers them all today, so they change together;
+-- separating the operational certificate's scheme from the witnesses' would
+-- need per-role signature types, which is left for a later design.
+#if defined(PQ_DSIGN_MLDSA44)
+type DSIGN = DSIGN.MLDSA44DSIGN
+#else
 type DSIGN = DSIGN.Ed25519DSIGN
+#endif
 
 -- | The role of a key.
 --

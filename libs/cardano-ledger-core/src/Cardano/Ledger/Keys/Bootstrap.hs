@@ -168,7 +168,11 @@ verifyBootstrapWit txbodyHash witness =
     txbodyHash
     (coerce $ bwSignature witness)
 
-coerceSignature :: WC.XSignature -> DSIGN.SigDSIGN DSIGN.Ed25519DSIGN
+-- Byron signatures are Ed25519; this only type-checks as a 'DSIGN' signature
+-- because 'DSIGN' is Ed25519. Under the experimental ML-DSA 'DSIGN' the
+-- decode fails at run time, which is fine: Byron bootstrap witnesses are
+-- not used on those test networks.
+coerceSignature :: WC.XSignature -> DSIGN.SigDSIGN DSIGN
 coerceSignature sig =
   fromMaybe (error "coerceSignature: impossible! signature size mismatch") $
     rawDecodeFixedSized (WC.unXSignature sig)
