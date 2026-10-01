@@ -26,18 +26,21 @@
 module Cardano.Protocol.Praos.BlockHeader (
   Header (Header, headerBody, headerSig),
   HeaderBody (..),
-  IssuerCert (..),
+  HeaderOCert (..),
+  OCertAuth (..),
+  mkHeaderOCert,
   headerHash,
   headerSize,
 ) where
 
+import qualified Cardano.Crypto.DSIGN as DSIGN
 import qualified Cardano.Crypto.Hash as Hash
 import qualified Cardano.Crypto.KES as KES
 import Cardano.Crypto.Util (
   SignableRepresentation (getSignableRepresentation),
  )
 import qualified Cardano.Crypto.VRF as VRF
-import Cardano.Ledger.BaseTypes (ProtVer (pvMajor))
+import Cardano.Ledger.BaseTypes (ProtVer (pvMajor), StrictMaybe (..))
 import Cardano.Ledger.Binary (
   Annotator (..),
   DecCBOR (decCBOR),
@@ -45,7 +48,6 @@ import Cardano.Ledger.Binary (
   decodeFixedSized,
   encodeFixedSized,
   serialize',
-  unCBORGroup,
  )
 import Cardano.Ledger.Binary.Coders
 import qualified Cardano.Ledger.Binary.Plain as Plain
@@ -60,8 +62,7 @@ import Cardano.Ledger.Hashes (
   extractHash,
   originalBytesSize,
  )
-import Cardano.Ledger.BaseTypes (StrictMaybe)
-import Cardano.Ledger.Keys (KeyHash, KeyRole (BlockIssuer), VKey)
+import Cardano.Ledger.Keys (DSIGN, KeyHash, KeyRole (BlockIssuer), VKey)
 import Cardano.Ledger.MemoBytes (
   Mem,
   MemoBytes,
@@ -74,7 +75,7 @@ import Cardano.Ledger.MemoBytes (
 import Cardano.Protocol.Crypto (Crypto, KES, VRF)
 import Cardano.Protocol.Praos.VRF (InputVRF)
 import Cardano.Protocol.TPraos.BlockHeader (PrevHash)
-import Cardano.Protocol.TPraos.OCert (OCert)
+import Cardano.Protocol.TPraos.OCert (KESPeriod, OCert (..), OCertSignable)
 import Cardano.Slotting.Block (BlockNo)
 import Cardano.Slotting.Slot (SlotNo)
 import Data.Word (Word32, Word64)
@@ -82,38 +83,64 @@ import GHC.Generics (Generic)
 import Lens.Micro (lens, to)
 import NoThunks.Class (NoThunks (..))
 
--- | The body of the header is the part which gets hashed to form the hash
--- chain.
--- | The block issuer's cold verification key together with its operational
--- certificate. Carried in a header only when the issuer's certificate is not
--- yet known to the chain, that is on the first block after a KES key
--- rotation (or the issuer's first block ever). Every other header identifies
--- the issuer by key hash and counter alone, and verifiers look the current
--- certificate up in the chain-dependent state.
---
--- Experimental header format for the post-quantum header experiments: with
--- post-quantum cold keys and KES keys the certificate is several kilobytes,
--- and it changes only every few weeks.
-data IssuerCert crypto = IssuerCert
-  { icVk :: !(VKey BlockIssuer)
-  -- ^ verification key of block issuer
-  , icOCert :: !(OCert crypto)
-  -- ^ operational certificate
+-- | Cold-key authentication of the operational certificate fields. Omitted
+-- when those fields are already authenticated in the chain-dependent state.
+data OCertAuth crypto = OCertAuth
+  { oaColdKey :: !(VKey BlockIssuer)
+  , oaColdSig :: !(DSIGN.SignedDSIGN DSIGN (OCertSignable crypto))
   }
   deriving (Generic)
 
-deriving instance Crypto crypto => Show (IssuerCert crypto)
-deriving instance Crypto crypto => Eq (IssuerCert crypto)
+deriving instance Crypto crypto => Show (OCertAuth crypto)
 
-instance Crypto crypto => NoThunks (IssuerCert crypto)
+deriving instance Crypto crypto => Eq (OCertAuth crypto)
 
-instance Crypto crypto => EncCBOR (IssuerCert crypto) where
-  encCBOR IssuerCert {icVk, icOCert} =
-    encode $ Rec IssuerCert !> To icVk !> To icOCert
+instance Crypto crypto => NoThunks (OCertAuth crypto)
 
-instance Crypto crypto => DecCBOR (IssuerCert crypto) where
-  decCBOR = decode $ RecD IssuerCert <! From <! mapCoder unCBORGroup From
+instance Crypto crypto => EncCBOR (OCertAuth crypto) where
+  encCBOR OCertAuth {oaColdKey, oaColdSig} =
+    encode $ Rec OCertAuth !> To oaColdKey !> E encodeFixedSized oaColdSig
 
+instance Crypto crypto => DecCBOR (OCertAuth crypto) where
+  decCBOR = decode $ RecD OCertAuth <! From <! D decodeFixedSized
+
+-- | Header representation of an operational certificate. The hot KES key,
+-- counter and start period are always present, so the header's KES signature
+-- can be checked without chain state. Full validation also authenticates these
+-- fields using either 'hocAuth' or the certificate remembered on this chain.
+-- The on-disk 'OCert' used by operators remains a complete signed certificate.
+data HeaderOCert crypto = HeaderOCert
+  { hocHotKey :: !(KES.VerKeyKES (KES crypto))
+  , hocIssueNo :: !Word64
+  , hocStartPeriod :: !KESPeriod
+  , hocAuth :: !(StrictMaybe (OCertAuth crypto))
+  }
+  deriving (Generic)
+
+deriving instance Crypto crypto => Show (HeaderOCert crypto)
+
+deriving instance Crypto crypto => Eq (HeaderOCert crypto)
+
+instance Crypto crypto => NoThunks (HeaderOCert crypto)
+
+instance Crypto crypto => EncCBOR (HeaderOCert crypto) where
+  encCBOR HeaderOCert {hocHotKey, hocIssueNo, hocStartPeriod, hocAuth} =
+    encode $
+      Rec HeaderOCert
+        !> E encodeFixedSized hocHotKey
+        !> To hocIssueNo
+        !> To hocStartPeriod
+        !> To hocAuth
+
+instance Crypto crypto => DecCBOR (HeaderOCert crypto) where
+  decCBOR = decode $ RecD HeaderOCert <! D decodeFixedSized <! From <! From <! From
+
+-- | Include the cold key and signature when introducing a certificate.
+mkHeaderOCert :: VKey BlockIssuer -> OCert crypto -> HeaderOCert crypto
+mkHeaderOCert vk (OCert hotKey counter startPeriod sig) =
+  HeaderOCert hotKey counter startPeriod (SJust (OCertAuth vk sig))
+
+-- | The body of the header is the part signed by the KES key.
 data HeaderBody crypto = HeaderBody
   { hbBlockNo :: !BlockNo
   -- ^ block number
@@ -123,9 +150,6 @@ data HeaderBody crypto = HeaderBody
   -- ^ Hash of the previous block header
   , hbIssuer :: !(KeyHash BlockIssuer)
   -- ^ hash of the block issuer's cold verification key
-  , hbIssueNo :: !Word64
-  -- ^ counter of the operational certificate in force for this header; equal
-  -- to the certificate's counter when 'hbOCert' is present
   , hbVrfVk :: !(VRF.VerKeyVRF (VRF crypto))
   -- ^ VRF verification key for block issuer
   , hbVrfRes :: !(VRF.CertifiedVRF (VRF crypto) InputVRF)
@@ -134,8 +158,8 @@ data HeaderBody crypto = HeaderBody
   -- ^ Size of the block body
   , hbBodyHash :: !(Hash.Hash HASH EraIndependentBlockBody)
   -- ^ Hash of block body
-  , hbOCert :: !(StrictMaybe (IssuerCert crypto))
-  -- ^ cold key and operational certificate, only when the KES key rotated
+  , hbOCert :: !(HeaderOCert crypto)
+  -- ^ operational certificate fields with optional cold-key authentication
   , hbProtVer :: !ProtVer
   -- ^ protocol version
   }
@@ -215,7 +239,6 @@ instance Crypto crypto => EncCBOR (HeaderBody crypto) where
       , hbSlotNo
       , hbPrev
       , hbIssuer
-      , hbIssueNo
       , hbVrfVk
       , hbVrfRes
       , hbBodySize
@@ -229,7 +252,6 @@ instance Crypto crypto => EncCBOR (HeaderBody crypto) where
           !> To hbSlotNo
           !> To hbPrev
           !> To hbIssuer
-          !> To hbIssueNo
           !> E encodeFixedSized hbVrfVk
           !> To hbVrfRes
           !> To hbBodySize
@@ -241,7 +263,6 @@ instance Crypto crypto => DecCBOR (HeaderBody crypto) where
   decCBOR =
     decode $
       RecD HeaderBody
-        <! From
         <! From
         <! From
         <! From
