@@ -50,12 +50,14 @@ module Cardano.Ledger.Alonzo.TxWits (
   unTxDatsL,
   alonzoEqTxWitsRaw,
   emptyTxWitsRaw,
+  coldAlonzoTxWitsL,
   addScriptsTxWitsRaw,
   decodeAlonzoPlutusScript,
   alonzoPlutusScriptDecoder,
   asHashedScriptPair,
 ) where
 
+import Cardano.Ledger.State.ColdKey (ColdWitness)
 import Cardano.Base.Proxy (asProxy)
 import Cardano.Base.Typeable (TypeName (TypeName))
 import Cardano.Ledger.Alonzo.Era (AlonzoEra)
@@ -224,7 +226,7 @@ unRedeemersL f = fmap Redeemers . f . unRedeemers
 {-# INLINE unRedeemersL #-}
 
 emptyTxWitsRaw :: AlonzoEraScript era => AlonzoTxWitsRaw era
-emptyTxWitsRaw = AlonzoTxWitsRaw mempty mempty mempty mempty emptyRedeemers
+emptyTxWitsRaw = AlonzoTxWitsRaw mempty mempty mempty mempty emptyRedeemers mempty
 
 emptyRedeemers :: AlonzoEraScript era => Redeemers era
 emptyRedeemers = Redeemers mempty
@@ -252,6 +254,7 @@ data AlonzoTxWitsRaw era = AlonzoTxWitsRaw
   , atwrScriptTxWits :: !(Map ScriptHash (Script era))
   , atwrDatsTxWits :: !(TxDats era)
   , atwrRdmrsTxWits :: !(Redeemers era)
+  , atwrColdTxWits :: !(Set ColdWitness)
   }
   deriving (Generic)
 
@@ -274,9 +277,9 @@ instance AlonzoEraScript era => Semigroup (AlonzoTxWits era) where
   (<>) x y | isEmptyTxWitness x = y
   (<>) x y | isEmptyTxWitness y = x
   (<>)
-    (getMemoRawType -> AlonzoTxWitsRaw a b c d (Redeemers e))
-    (getMemoRawType -> AlonzoTxWitsRaw u v w x (Redeemers y)) =
-      AlonzoTxWits (a <> u) (b <> v) (c <> w) (d <> x) (Redeemers (e <> y))
+    (getMemoRawType -> AlonzoTxWitsRaw a b c d (Redeemers e) cold)
+    (getMemoRawType -> AlonzoTxWitsRaw u v w x (Redeemers y) cold2) =
+      mkMemoizedEra @era $ AlonzoTxWitsRaw (a <> u) (b <> v) (c <> w) (d <> x) (Redeemers (e <> y)) (cold <> cold2)
 
 instance AlonzoEraScript era => Monoid (AlonzoTxWits era) where
   mempty = AlonzoTxWits mempty mempty mempty mempty (Redeemers mempty)
@@ -290,8 +293,8 @@ deriving instance
   NFData (AlonzoTxWits era)
 
 isEmptyTxWitness :: AlonzoEraScript era => AlonzoTxWits era -> Bool
-isEmptyTxWitness (getMemoRawType -> AlonzoTxWitsRaw a b c d (Redeemers e)) =
-  Set.null a && Set.null b && Map.null c && Map.null (d ^. unTxDatsL) && Map.null e
+isEmptyTxWitness (getMemoRawType -> AlonzoTxWitsRaw a b c d (Redeemers e) cold) =
+  Set.null cold && Set.null a && Set.null b && Map.null c && Map.null (d ^. unTxDatsL) && Map.null e
 
 -- =====================================================
 newtype TxDatsRaw era = TxDatsRaw {unTxDatsRaw :: Map DataHash (Data era)}
@@ -407,16 +410,19 @@ pattern AlonzoTxWits ::
   Redeemers era ->
   AlonzoTxWits era
 pattern AlonzoTxWits {txwitsVKey, txwitsBoot, txscripts, txdats, txrdmrs} <-
-  (getMemoRawType -> AlonzoTxWitsRaw txwitsVKey txwitsBoot txscripts txdats txrdmrs)
+  (getMemoRawType -> AlonzoTxWitsRaw txwitsVKey txwitsBoot txscripts txdats txrdmrs _)
   where
     AlonzoTxWits witsVKey' witsBoot' witsScript' witsDat' witsRdmr' =
-      mkMemoizedEra @era $ AlonzoTxWitsRaw witsVKey' witsBoot' witsScript' witsDat' witsRdmr'
+      mkMemoizedEra @era $ AlonzoTxWitsRaw witsVKey' witsBoot' witsScript' witsDat' witsRdmr' mempty
 
 {-# COMPLETE AlonzoTxWits #-}
 
 -- =======================================================
 -- Accessors
 -- =======================================================
+
+coldAlonzoTxWitsL :: forall era. AlonzoEraScript era => Lens' (AlonzoTxWits era) (Set ColdWitness)
+coldAlonzoTxWitsL = lensMemoRawType @era atwrColdTxWits $ \w c -> w {atwrColdTxWits = c}
 
 addrAlonzoTxWitsL ::
   forall era.
@@ -509,12 +515,12 @@ hashDataTxWitsL =
 instance Era era => EncCBOR (AlonzoTxWits era)
 
 instance AlonzoEraScript era => EncCBOR (AlonzoTxWitsRaw era) where
-  encCBOR (AlonzoTxWitsRaw vkeys boots scripts dats rdmrs) =
+  encCBOR (AlonzoTxWitsRaw vkeys boots scripts dats rdmrs cold) =
     encode $
       Keyed
-        ( \a b c d e f g h ->
+        ( \a b c d e f g h i ->
             let ps = toScript @'PlutusV1 d <> toScript @'PlutusV2 e <> toScript @'PlutusV3 f
-             in AlonzoTxWitsRaw a b (c <> ps) g h
+             in AlonzoTxWitsRaw a b (c <> ps) g h i
         )
         !> Omit null (Key 0 $ To vkeys)
         !> Omit null (Key 2 $ To boots)
@@ -530,6 +536,7 @@ instance AlonzoEraScript era => EncCBOR (AlonzoTxWitsRaw era) where
         !> Omit null (Key 7 $ encodePlutus SPlutusV3)
         !> Omit (null . unTxDats) (Key 4 $ To dats)
         !> Omit (null . unRedeemers) (Key 5 $ To rdmrs)
+        !> Omit null (Key 8 $ To cold)
     where
       encodePlutus ::
         PlutusLanguage l =>
@@ -643,6 +650,7 @@ instance
         4 -> Just $ decodeAccA acc (\x w -> w {atwrDatsTxWits = x}) decCBOR
         5 -> Just $ decodeAccA acc (\x w -> w {atwrRdmrsTxWits = x}) decCBOR
         6 -> Just $ decodeAccA acc addScriptsTxWitsRaw (pure <$> alonzoPlutusScriptDecoder SPlutusV2)
+        8 | eraProtVerLow @era >= natVersion @9 -> Just $ decodeAccA acc (\x w -> w {atwrColdTxWits = x}) (pure <$> decCBOR)
         7 -> Just $ decodeAccA acc addScriptsTxWitsRaw (pure <$> alonzoPlutusScriptDecoder SPlutusV3)
         _ -> Nothing
       {-# INLINE decoderByKey #-}
@@ -671,6 +679,7 @@ instance
       txWitnessField 4 = fieldAA (\x wits -> wits {atwrDatsTxWits = x}) From
       txWitnessField 5 = fieldAA (\x wits -> wits {atwrRdmrsTxWits = x}) From
       txWitnessField 6 = fieldA addScriptsTxWitsRaw (decodeAlonzoPlutusScript SPlutusV2)
+      txWitnessField 8 | eraProtVerLow @era >= natVersion @9 = fieldA (\x w -> w {atwrColdTxWits = x}) From
       txWitnessField 7 = fieldA addScriptsTxWitsRaw (decodeAlonzoPlutusScript SPlutusV3)
       txWitnessField n = invalidField n
       {-# INLINE txWitnessField #-}
@@ -768,7 +777,8 @@ asHashedScriptPair script =
 
 alonzoEqTxWitsRaw :: AlonzoEraTxWits era => TxWits era -> TxWits era -> Bool
 alonzoEqTxWitsRaw txWits1 txWits2 =
-  shelleyEqTxWitsRaw txWits1 txWits2
+  (txWits1 ^. coldTxWitsG) == (txWits2 ^. coldTxWitsG)
+    && shelleyEqTxWitsRaw txWits1 txWits2
     && eqRawType (txWits1 ^. datsTxWitsL) (txWits2 ^. datsTxWitsL)
     && eqRawType (txWits1 ^. rdmrsTxWitsL) (txWits2 ^. rdmrsTxWitsL)
 

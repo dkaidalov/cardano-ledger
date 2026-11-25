@@ -5,6 +5,7 @@ module Cardano.Ledger.Dijkstra.TxWits () where
 
 import Cardano.Ledger.Alonzo.TxWits (
   addrAlonzoTxWitsL,
+  coldAlonzoTxWitsL,
   bootAddrAlonzoTxWitsL,
   datsAlonzoTxWitsL,
   rdmrsAlonzoTxWitsL,
@@ -19,6 +20,8 @@ instance EraTxWits DijkstraEra where
   type TxWits DijkstraEra = AlonzoTxWits DijkstraEra
 
   mkBasicTxWits = mempty
+
+  coldTxWitsG = coldAlonzoTxWitsL
 
   addrTxWitsL = addrAlonzoTxWitsL
   {-# INLINE addrTxWitsL #-}

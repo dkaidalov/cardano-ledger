@@ -8,6 +8,7 @@ module Cardano.Ledger.Conway.TxWits (
 
 import Cardano.Ledger.Alonzo.TxWits (
   addrAlonzoTxWitsL,
+  coldAlonzoTxWitsL,
   bootAddrAlonzoTxWitsL,
   datsAlonzoTxWitsL,
   rdmrsAlonzoTxWitsL,
@@ -25,6 +26,8 @@ instance EraTxWits ConwayEra where
   type TxWits ConwayEra = AlonzoTxWits ConwayEra
 
   mkBasicTxWits = mempty
+
+  coldTxWitsG = coldAlonzoTxWitsL
 
   addrTxWitsL = addrAlonzoTxWitsL
   {-# INLINE addrTxWitsL #-}

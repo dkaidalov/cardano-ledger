@@ -12,6 +12,7 @@
 module Cardano.Ledger.Conway.UTxO (
   conwayProducedValue,
   getConwayWitsVKeyNeeded,
+  getConwayColdWitsNeeded,
   getConwayScriptsNeeded,
   txNonDistinctRefScriptsSize,
   getConwayMinFeeTxUtxo,
@@ -184,14 +185,17 @@ getConwayWitsVKeyNeeded certState utxo txBody =
       [ asWitness (ckrNewKey rotation)
       | cert <- toList (txBody ^. certsTxBodyL)
       , Just rotation <- [getPoolColdKeyRotation cert]
+      , ckrScheme rotation == ColdEd25519
       ]
   where
     authorities = psColdKeys (certState ^. certPStateL)
-    poolKey poolId = ckaKey $ Map.findWithDefault (initialColdKeyAuthority poolId) poolId authorities
+    poolKey poolId =
+      let a = Map.findWithDefault (initialColdKeyAuthority poolId) poolId authorities
+       in if ckaScheme a == ColdEd25519 then Just (ckaKey a) else Nothing
 
 voterWitnesses ::
   ConwayEraTxBody era =>
-  (KeyHash StakePool -> KeyHash StakePool) ->
+  (KeyHash StakePool -> Maybe (KeyHash StakePool)) ->
   TxBody l era ->
   Set.Set (KeyHash Witness)
 voterWitnesses poolKey txb =
@@ -202,4 +206,26 @@ voterWitnesses poolKey txb =
         case voter of
           CommitteeVoter cred -> credKeyHashWitness cred
           DRepVoter cred -> credKeyHashWitness cred
-          StakePoolVoter poolId -> Just $ asWitness (poolKey poolId)
+          StakePoolVoter poolId -> asWitness <$> poolKey poolId
+
+-- Pool-only ML-DSA authorities; never substitute payment, owner or required signers.
+getConwayColdWitsNeeded ::
+  (EraTx era, ConwayEraTxBody era, EraCertState era) =>
+  CertState era -> TxBody l era -> Set.Set (KeyHash StakePool)
+getConwayColdWitsNeeded certState body = Set.fromList $
+  [ ckaKey a
+  | poolId <- certPools ++ voterPools
+  , let a = Map.findWithDefault (initialColdKeyAuthority poolId) poolId authorities
+  , ckaScheme a == ColdMLDSA44
+  ] ++
+  [ ckrNewKey r | cert <- toList (body ^. certsTxBodyL)
+  , Just r <- [getPoolColdKeyRotation cert], ckrScheme r == ColdMLDSA44 ]
+  where
+    authorities = psColdKeys (certState ^. certPStateL)
+    certPools = [ p | cert <- toList (body ^. certsTxBodyL)
+      , Just pc <- [getPoolCertTxCert cert]
+      , let p = case pc of
+              RegPool params -> sppId params
+              RegPoolWithRotation params _ -> sppId params
+              RetirePool poolId _ -> poolId ]
+    voterPools = [ p | StakePoolVoter p <- Map.keys (unVotingProcedures (body ^. votingProceduresTxBodyL)) ]

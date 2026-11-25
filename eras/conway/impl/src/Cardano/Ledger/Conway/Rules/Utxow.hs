@@ -19,11 +19,20 @@ module Cardano.Ledger.Conway.Rules.Utxow (
   alonzoToConwayUtxowPredFailure,
   babbageToConwayUtxowPredFailure,
   UTXOW,
+  validateColdWitnesses,
   ConwayUtxowPredFailure (..),
   shelleyToConwayUtxowPredFailure,
 ) where
 
-import Cardano.Crypto.Hash (ByteString)
+import Cardano.Crypto.Hash (ByteString, hashToBytes)
+import Cardano.Ledger.State.ColdKey
+import Cardano.Ledger.State (EraCertState, CertState)
+import Cardano.Ledger.Conway.UTxO (getConwayColdWitsNeeded)
+import Cardano.Ledger.Rules.ValidationMode (Test, runTest)
+import Control.State.Transition.Extended (TRC (..), judgmentContext)
+import Validation (failureUnless)
+import qualified Data.Set as Set
+import Lens.Micro ((^.))
 import qualified Cardano.Ledger.Allegra.Rules as Allegra
 import Cardano.Ledger.Alonzo.Plutus.Context (SupportedPlutusRunnable (..))
 import qualified Cardano.Ledger.Alonzo.Rules as Alonzo
@@ -56,7 +65,8 @@ import GHC.Generics (Generic)
 
 -- | Predicate failure type for the Conway Era
 data ConwayUtxowPredFailure era
-  = UtxoFailure (PredicateFailure (EraRule "UTXO" era))
+  = InvalidColdWitnessesUTXOW
+  | UtxoFailure (PredicateFailure (EraRule "UTXO" era))
   | InvalidWitnessesUTXOW (NonEmpty (VKey Witness))
   | -- | witnesses which failed in verifiedWits function
     MissingVKeyWitnessesUTXOW
@@ -172,6 +182,7 @@ instance
   ( AlonzoEraTx era
   , AlonzoEraUTxO era
   , ConwayEraTxBody era
+  , EraCertState era
   , ScriptsNeeded era ~ AlonzoScriptsNeeded era
   , StAnnTxCache era ~ Map.Map ScriptHash (SupportedPlutusRunnable era)
   , EraRule "UTXOW" era ~ UTXOW era
@@ -195,7 +206,10 @@ instance
   type BaseM (UTXOW era) = ShelleyBase
   type PredicateFailure (UTXOW era) = ConwayUtxowPredFailure era
   type Event (UTXOW era) = Alonzo.AlonzoUtxowEvent era
-  transitionRules = [Babbage.babbageUtxowTransition @era]
+  transitionRules = [do
+    TRC (Shelley.UtxoEnv _ _ certState, _, stAnnTx) <- judgmentContext
+    runTest $ validateColdWitnesses certState (stAnnTx ^. txStAnnTxG)
+    Babbage.babbageUtxowTransition @era]
   initialRules = []
 
 instance
@@ -224,6 +238,7 @@ instance
   where
   encCBOR =
     encode . \case
+      InvalidColdWitnessesUTXOW -> Sum InvalidColdWitnessesUTXOW 19
       UtxoFailure x -> Sum UtxoFailure 0 !> To x
       InvalidWitnessesUTXOW xs -> Sum InvalidWitnessesUTXOW 1 !> To xs
       MissingVKeyWitnessesUTXOW xs -> Sum MissingVKeyWitnessesUTXOW 2 !> To xs
@@ -251,6 +266,7 @@ instance
   DecCBOR (ConwayUtxowPredFailure era)
   where
   decCBOR = decode . Summands "ConwayUtxowPred" $ \case
+    19 -> SumD InvalidColdWitnessesUTXOW
     0 -> SumD UtxoFailure <! From
     1 -> SumD InvalidWitnessesUTXOW <! From
     2 -> SumD MissingVKeyWitnessesUTXOW <! From
@@ -317,3 +333,16 @@ shelleyToConwayUtxowPredFailure = \case
 
 instance InjectRuleFailure "UTXOW" ConwayUtxosPredFailure ConwayEra where
   injectFailure = UtxoFailure . injectFailure
+
+validateColdWitnesses ::
+  (EraTx era, ConwayEraTxBody era, EraCertState era) =>
+  CertState era -> Tx l era -> Test (ConwayUtxowPredFailure era)
+validateColdWitnesses certState tx = failureUnless valid InvalidColdWitnessesUTXOW
+  where
+    body = tx ^. bodyTxL
+    witnesses = tx ^. witsTxL . coldTxWitsG
+    needed = getConwayColdWitsNeeded certState body
+    supplied = Set.map coldWitnessKeyHash witnesses
+    message = hashToBytes $ extractHash $ hashAnnotated @_ @EraIndependentTxBody body
+    valid = needed == supplied && Set.size supplied == Set.size witnesses
+      && all (verifyColdWitness message) witnesses

@@ -53,7 +53,7 @@ import Cardano.Ledger.Keys (VKey)
 import Cardano.Ledger.Rules.ValidationMode
 import Cardano.Ledger.Shelley.LedgerState (UTxOState)
 import qualified Cardano.Ledger.Shelley.Rules as Shelley
-import Cardano.Ledger.State (EraUTxO (..))
+import Cardano.Ledger.State (EraUTxO (..), EraCertState)
 import Cardano.Ledger.TxIn (TxIn)
 import Control.DeepSeq (NFData)
 import Control.State.Transition.Extended
@@ -65,7 +65,8 @@ import GHC.Generics (Generic)
 import Lens.Micro
 
 data DijkstraSubUtxowPredFailure era
-  = SubUtxoFailure (PredicateFailure (EraRule "SUBUTXO" era))
+  = SubInvalidColdWitnessesUTXOW
+  | SubUtxoFailure (PredicateFailure (EraRule "SUBUTXO" era))
   | SubInvalidWitnessesUTXOW (NonEmpty (VKey Witness))
   | -- | witnesses which failed in verifiedWits function
     SubMissingVKeyWitnessesUTXOW
@@ -174,6 +175,7 @@ instance NFData (Event (EraRule "SUBUTXO" era)) => NFData (DijkstraSubUtxowEvent
 instance
   ( AlonzoEraTx era
   , AlonzoEraUTxO era
+  , EraCertState era
   , BabbageEraTxOut era
   , ConwayEraGov era
   , ConwayEraTxBody era
@@ -186,6 +188,7 @@ instance
   , InjectRuleFailure "SUBUTXOW" Alonzo.AlonzoUtxowPredFailure era
   , InjectRuleFailure "SUBUTXOW" Shelley.ShelleyUtxowPredFailure era
   , InjectRuleFailure "SUBUTXOW" Babbage.BabbageUtxowPredFailure era
+  , InjectRuleFailure "SUBUTXOW" Conway.ConwayUtxowPredFailure era
   , InjectRuleFailure "SUBUTXOW" DijkstraUtxowPredFailure era
   , ScriptsNeeded era ~ AlonzoScriptsNeeded era
   ) =>
@@ -204,6 +207,7 @@ dijkstraSubUtxowTransition ::
   forall era.
   ( AlonzoEraTx era
   , AlonzoEraUTxO era
+  , EraCertState era
   , DijkstraEraTxBody era
   , StAnnTxCache era ~ Map.Map ScriptHash (SupportedPlutusRunnable era)
   , EraRule "SUBUTXO" era ~ SUBUTXO era
@@ -212,6 +216,7 @@ dijkstraSubUtxowTransition ::
   , InjectRuleFailure "SUBUTXOW" Alonzo.AlonzoUtxowPredFailure era
   , InjectRuleFailure "SUBUTXOW" Shelley.ShelleyUtxowPredFailure era
   , InjectRuleFailure "SUBUTXOW" Babbage.BabbageUtxowPredFailure era
+  , InjectRuleFailure "SUBUTXOW" Conway.ConwayUtxowPredFailure era
   , InjectRuleFailure "SUBUTXOW" DijkstraUtxowPredFailure era
   , ScriptsNeeded era ~ AlonzoScriptsNeeded era
   ) =>
@@ -225,6 +230,7 @@ dijkstraSubUtxowTransition = do
       scriptsProvided = scriptsProvidedStAnnTx stAnnTx
 
   {- ∀[ (vk , σ) ∈ vKeySigs ] isSigned vk (txidBytes txId) σ -}
+  runTest $ Conway.validateColdWitnesses certState tx
   runTestOnSignal $ Shelley.validateVerifiedWits tx
 
   let scriptsNeeded = scriptsNeededStAnnTx stAnnTx
@@ -276,6 +282,7 @@ instance
   where
   encCBOR =
     encode . \case
+      SubInvalidColdWitnessesUTXOW -> Sum SubInvalidColdWitnessesUTXOW 18
       SubUtxoFailure x -> Sum SubUtxoFailure 0 !> To x
       SubInvalidWitnessesUTXOW xs -> Sum SubInvalidWitnessesUTXOW 1 !> To xs
       SubMissingVKeyWitnessesUTXOW xs -> Sum SubMissingVKeyWitnessesUTXOW 2 !> To xs
@@ -302,6 +309,7 @@ instance
   DecCBOR (DijkstraSubUtxowPredFailure era)
   where
   decCBOR = decode . Summands "DijkstraUtxowPred" $ \case
+    18 -> SumD SubInvalidColdWitnessesUTXOW
     0 -> SumD SubUtxoFailure <! From
     1 -> SumD SubInvalidWitnessesUTXOW <! From
     2 -> SumD SubMissingVKeyWitnessesUTXOW <! From
@@ -329,6 +337,7 @@ dijkstraUtxowToDijkstraSubUtxowPredFailure ::
   ) =>
   DijkstraUtxowPredFailure era -> DijkstraSubUtxowPredFailure era
 dijkstraUtxowToDijkstraSubUtxowPredFailure = \case
+  InvalidColdWitnessesUTXOW -> SubInvalidColdWitnessesUTXOW
   UtxoFailure f -> SubUtxoFailure (injectFailure @"SUBUTXO" f)
   InvalidWitnessesUTXOW ks -> SubInvalidWitnessesUTXOW ks
   MissingVKeyWitnessesUTXOW ks -> SubMissingVKeyWitnessesUTXOW ks

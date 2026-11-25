@@ -101,6 +101,7 @@ import Cardano.Ledger.Binary (
   serialize,
   translateViaCBORAnnotator,
  )
+import Cardano.Ledger.State.ColdKey (ColdWitness)
 import Cardano.Ledger.Coin (Coin)
 import Cardano.Ledger.Compactible (Compactible (..))
 import Cardano.Ledger.Core.Era
@@ -519,6 +520,9 @@ class
   mkBasicTxWits = mempty
 
   addrTxWitsL :: Lens' (TxWits era) (Set (WitVKey Witness))
+
+  coldTxWitsG :: SimpleGetter (TxWits era) (Set ColdWitness)
+  coldTxWitsG = to (const Set.empty)
 
   bootAddrTxWitsL :: Lens' (TxWits era) (Set BootstrapWitness)
 

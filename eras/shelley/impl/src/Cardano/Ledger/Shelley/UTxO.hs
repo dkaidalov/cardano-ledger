@@ -208,12 +208,12 @@ getShelleyWitsVKeyNeededNoGov ::
   UTxO era ->
   TxBody l era ->
   Set (KeyHash Witness)
-getShelleyWitsVKeyNeededNoGov = getShelleyWitsVKeyNeededNoGovWithPoolKey id
+getShelleyWitsVKeyNeededNoGov = getShelleyWitsVKeyNeededNoGovWithPoolKey Just
 
 -- | Resolve only pool certificate authorities, never arbitrary witness hashes.
 getShelleyWitsVKeyNeededNoGovWithPoolKey ::
   EraTx era =>
-  (KeyHash StakePool -> KeyHash StakePool) ->
+  (KeyHash StakePool -> Maybe (KeyHash StakePool)) ->
   UTxO era ->
   TxBody l era ->
   Set (KeyHash Witness)
@@ -257,9 +257,9 @@ getShelleyWitsVKeyNeededNoGovWithPoolKey poolKey utxo' txBody =
       where
         accum cert !ans =
           case getPoolCertTxCert cert of
-            Just (RegPool params) -> Set.insert (asWitness (poolKey (sppId params))) ans
-            Just (RegPoolWithRotation params _) -> Set.insert (asWitness (poolKey (sppId params))) ans
-            Just (RetirePool poolId _) -> Set.insert (asWitness (poolKey poolId)) ans
+            Just (RegPool params) -> maybe ans (\k -> Set.insert (asWitness k) ans) (poolKey (sppId params))
+            Just (RegPoolWithRotation params _) -> maybe ans (\k -> Set.insert (asWitness k) ans) (poolKey (sppId params))
+            Just (RetirePool poolId _) -> maybe ans (\k -> Set.insert (asWitness k) ans) (poolKey poolId)
             Nothing -> case getVKeyWitnessTxCert cert of
               Nothing -> ans
               Just vkeyWit -> Set.insert vkeyWit ans

@@ -57,6 +57,7 @@ import Cardano.Ledger.Dijkstra.Rules.Utxo (DijkstraUtxoEnv (..), DijkstraUtxoPre
 import Cardano.Ledger.Dijkstra.TxBody (DijkstraEraTxBody (..))
 import Cardano.Ledger.Dijkstra.UTxO (DijkstraEraUTxO (..))
 import Cardano.Ledger.Keys (VKey)
+import Cardano.Ledger.State (EraCertState)
 import Cardano.Ledger.Rules.ValidationMode (Test, runTest, runTestOnSignal)
 import Cardano.Ledger.Shelley.LedgerState (UTxOState)
 import qualified Cardano.Ledger.Shelley.Rules as Shelley
@@ -86,7 +87,8 @@ import Lens.Micro ((^.))
 
 -- | Predicate failure type for the Dijkstra Era
 data DijkstraUtxowPredFailure era
-  = UtxoFailure (PredicateFailure (EraRule "UTXO" era))
+  = InvalidColdWitnessesUTXOW
+  | UtxoFailure (PredicateFailure (EraRule "UTXO" era))
   | InvalidWitnessesUTXOW (NonEmpty (VKey Witness))
   | -- | witnesses which failed in verifiedWits function
     MissingVKeyWitnessesUTXOW
@@ -206,6 +208,7 @@ dijkstraUtxowTransition ::
   forall era.
   ( AlonzoEraTx era
   , DijkstraEraUTxO era
+  , EraCertState era
   , DijkstraEraTxBody era
   , ScriptsNeeded era ~ AlonzoScriptsNeeded era
   , StAnnTxCache era ~ Map.Map ScriptHash (SupportedPlutusRunnable era)
@@ -213,6 +216,7 @@ dijkstraUtxowTransition ::
   , InjectRuleFailure "UTXOW" Shelley.ShelleyUtxowPredFailure era
   , InjectRuleFailure "UTXOW" Alonzo.AlonzoUtxowPredFailure era
   , InjectRuleFailure "UTXOW" Babbage.BabbageUtxowPredFailure era
+  , InjectRuleFailure "UTXOW" Conway.ConwayUtxowPredFailure era
   , InjectRuleFailure "UTXOW" DijkstraUtxowPredFailure era
   , -- Allow UTXOW to call UTXO
     Embed (EraRule "UTXO" era) (UTXOW era)
@@ -276,6 +280,7 @@ dijkstraUtxowTransition = do
 
   -- check VKey witnesses
   {- ∀ (vk ↦ σ) ∈ (txwitsVKey txw), V_vk⟦ txbodyHash ⟧_σ -}
+  runTest $ Conway.validateColdWitnesses certState tx
   runTestOnSignal $ Shelley.validateVerifiedWits tx
 
   {- witsVKeyNeeded utxo tx genDelegs ⊆ witsKeyHashes -}
@@ -313,6 +318,7 @@ instance
   forall era.
   ( AlonzoEraTx era
   , DijkstraEraUTxO era
+  , EraCertState era
   , DijkstraEraTxBody era
   , ScriptsNeeded era ~ AlonzoScriptsNeeded era
   , StAnnTxCache era ~ Map.Map ScriptHash (SupportedPlutusRunnable era)
@@ -363,6 +369,7 @@ instance
   where
   encCBOR =
     encode . \case
+      InvalidColdWitnessesUTXOW -> Sum InvalidColdWitnessesUTXOW 21
       UtxoFailure x -> Sum UtxoFailure 0 !> To x
       InvalidWitnessesUTXOW xs -> Sum InvalidWitnessesUTXOW 1 !> To xs
       MissingVKeyWitnessesUTXOW xs -> Sum MissingVKeyWitnessesUTXOW 2 !> To xs
@@ -392,6 +399,7 @@ instance
   DecCBOR (DijkstraUtxowPredFailure era)
   where
   decCBOR = decode . Summands "ConwayUtxowPred" $ \case
+    21 -> SumD InvalidColdWitnessesUTXOW
     0 -> SumD UtxoFailure <! From
     1 -> SumD InvalidWitnessesUTXOW <! From
     2 -> SumD MissingVKeyWitnessesUTXOW <! From
@@ -423,6 +431,7 @@ conwayToDijkstraUtxowPredFailure ::
   Conway.ConwayUtxowPredFailure era ->
   DijkstraUtxowPredFailure era
 conwayToDijkstraUtxowPredFailure = \case
+  Conway.InvalidColdWitnessesUTXOW -> InvalidColdWitnessesUTXOW
   Conway.UtxoFailure f -> UtxoFailure f
   Conway.InvalidWitnessesUTXOW ks -> InvalidWitnessesUTXOW ks
   Conway.MissingVKeyWitnessesUTXOW ks -> MissingVKeyWitnessesUTXOW ks
