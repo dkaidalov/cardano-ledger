@@ -41,14 +41,18 @@ import Cardano.Ledger.BaseTypes (
 import Cardano.Ledger.Chain (ChainChecksPParams (..))
 import Cardano.Ledger.Core
 import Cardano.Ledger.Keys (GenDelegs)
-import Cardano.Ledger.Shelley.LedgerState (NewEpochState)
-import Cardano.Ledger.State (EraCertState, EraGov, PoolDistr)
+import Cardano.Ledger.State.ColdKey (ColdKeyAuthority)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
+import Cardano.Ledger.Shelley.LedgerState (NewEpochState, nesEsL, esLStateL, lsCertStateL)
+import Cardano.Ledger.Slot (epochFromSlot)
+import Cardano.Ledger.State (EraCertState (..), EraGov, PoolDistr, psColdKeysL, activateColdKeyAuthority)
 import Control.Monad.Trans.Reader (runReader)
 import Control.State.Transition.Extended
 import qualified Data.List.NonEmpty as NE (head)
 import Data.Void (Void, absurd)
 import Data.Word (Word16, Word32)
-import Lens.Micro (Lens', (^.))
+import Lens.Micro (Lens', (^.), (&), (%~))
 
 -- | Type-level tag distinguishing current from future forecasts.
 type data Timeline = Current | Future
@@ -72,6 +76,9 @@ class
   -- | Extract a forecast from a `NewEpochState`
   mkForecast :: NewEpochState era -> Forecast t era
 
+  coldKeysForecast :: Forecast t era -> Map (KeyHash StakePool) ColdKeyAuthority
+  coldKeysForecast _ = Map.empty
+
   poolDistrForecastL :: Lens' (Forecast t era) PoolDistr
   maxBlockHeaderSizeForecastL :: Lens' (Forecast t era) Word16
   maxBlockBodySizeForecastL :: Lens' (Forecast t era) Word32
@@ -90,9 +97,15 @@ futureForecast ::
   NewEpochState era ->
   Forecast Future era
 futureForecast globals slot nes =
-  either (absurd . NE.head) (mkForecast @era @Future) $
+  either (absurd . NE.head) (mkForecast @era @Future . activateAuthorities) $
     flip runReader globals $
       applySTS @(EraRule "TICKF" era) (TRC ((), nes, slot))
+  where
+    -- TICKF deliberately skips POOLREAP and does not advance nesEL. Resolve
+    -- cold authorities at the requested epoch explicitly before extracting them.
+    epoch = runReader (epochFromSlot slot) globals
+    activateAuthorities st = st & nesEsL . esLStateL . lsCertStateL . certPStateL . psColdKeysL
+      %~ Map.map (activateColdKeyAuthority epoch)
 
 -- | Additional forecast fields available only in TPraos eras.
 class (EraForecast era, AtMostEra "Alonzo" era) => ShelleyEraForecast era where

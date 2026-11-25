@@ -125,7 +125,11 @@ instance EraTxCert ConwayEra where
   mkRegPoolTxCert = ConwayTxCertPool . RegPool
 
   getRegPoolTxCert (ConwayTxCertPool (RegPool poolParams)) = Just poolParams
+  getRegPoolTxCert (ConwayTxCertPool (RegPoolWithRotation poolParams _)) = Just poolParams
   getRegPoolTxCert _ = Nothing
+
+  getPoolColdKeyRotation (ConwayTxCertPool (RegPoolWithRotation _ rotation)) = Just rotation
+  getPoolColdKeyRotation _ = Nothing
 
   mkRetirePoolTxCert poolId epochNo = ConwayTxCertPool $ RetirePool poolId epochNo
 
@@ -677,6 +681,10 @@ instance
       | 3 <= t && t < 5 -> poolTxCertDecoder t
       | t == 5 -> fail "Genesis delegation certificates are no longer supported"
       | t == 6 -> fail "MIR certificates are no longer supported"
+      | t == 19 -> do
+          params <- decCBOR
+          rotation <- decCBOR
+          pure (3, ConwayTxCertPool (RegPoolWithRotation params rotation))
       | 7 <= t -> conwayTxCertDelegDecoder t
     t -> invalidKey t
 

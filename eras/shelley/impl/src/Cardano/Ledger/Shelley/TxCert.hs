@@ -441,6 +441,8 @@ encodePoolCert = \case
       encodeListLen (1 + fromIntegral stakePoolParamsListLen)
         <> encodeWord8 3
         <> stakePoolParamsEncoding
+  RegPoolWithRotation poolParams rotation ->
+    encodeListLen 3 <> encodeWord8 19 <> encCBOR poolParams <> encCBOR rotation
   RetirePool vk epoch ->
     encodeListLen 3
       <> encodeWord8 4

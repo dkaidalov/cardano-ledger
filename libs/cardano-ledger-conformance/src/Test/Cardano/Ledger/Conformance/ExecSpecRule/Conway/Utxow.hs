@@ -73,7 +73,7 @@ instance ExecSpecRule "UTXOW" ConwayEra where
         , "Impl:"
         , "witsVKeyNeeded"
         , PP.pretty . showExpr $
-            getConwayWitsVKeyNeeded @ConwayEra (utxosUtxo st) (sig ^. txStAnnTxG . bodyTxL)
+            getConwayWitsVKeyNeeded @ConwayEra (uecUtxoEnv ctx ^. utxoEnvCertStateL) (utxosUtxo st) (sig ^. txStAnnTxG . bodyTxL)
         , "witsVKeyHashes"
         , "Spec:"
         , PP.pretty result

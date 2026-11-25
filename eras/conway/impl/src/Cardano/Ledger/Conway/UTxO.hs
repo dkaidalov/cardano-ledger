@@ -51,10 +51,11 @@ import Cardano.Ledger.Credential (credKeyHashWitness, credScriptHash)
 import Cardano.Ledger.Keys (asWitness)
 import Cardano.Ledger.Mary.UTxO (getConsumedMaryValue, getProducedMaryValue)
 import Cardano.Ledger.Mary.Value (MaryValue)
-import Cardano.Ledger.Shelley.UTxO (getShelleyWitsVKeyNeededNoGov)
+import Cardano.Ledger.Shelley.UTxO (getShelleyWitsVKeyNeededNoGovWithPoolKey)
 import Cardano.Ledger.Val (Val (..), inject)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes)
+import Data.Foldable (toList)
 import Data.Monoid (Sum (..))
 import qualified Data.Set as Set
 import Lens.Micro ((^.))
@@ -129,7 +130,7 @@ instance EraUTxO ConwayEra where
 
   getScriptsHashesNeeded = getAlonzoScriptsHashesNeeded -- TODO: This also changes for Conway
 
-  getWitsVKeyNeeded _ = getConwayWitsVKeyNeeded
+  getWitsVKeyNeeded = getConwayWitsVKeyNeeded
 
   getMinFeeTxUtxo = getConwayMinFeeTxUtxo
 
@@ -170,20 +171,30 @@ txNonDistinctRefScriptsSize utxo tx = getSum $ foldMap (Sum . originalBytesSize 
     refScripts = getReferenceScriptsNonDistinct utxo inputs
 
 getConwayWitsVKeyNeeded ::
-  (EraTx era, ConwayEraTxBody era) =>
+  (EraTx era, ConwayEraTxBody era, EraCertState era) =>
+  CertState era ->
   UTxO era ->
   TxBody l era ->
   Set.Set (KeyHash Witness)
-getConwayWitsVKeyNeeded utxo txBody =
-  getShelleyWitsVKeyNeededNoGov utxo txBody
+getConwayWitsVKeyNeeded certState utxo txBody =
+  getShelleyWitsVKeyNeededNoGovWithPoolKey poolKey utxo txBody
     `Set.union` Set.map asWitness (txBody ^. reqSignerHashesTxBodyG)
-    `Set.union` voterWitnesses txBody
+    `Set.union` voterWitnesses poolKey txBody
+    `Set.union` Set.fromList
+      [ asWitness (ckrNewKey rotation)
+      | cert <- toList (txBody ^. certsTxBodyL)
+      , Just rotation <- [getPoolColdKeyRotation cert]
+      ]
+  where
+    authorities = psColdKeys (certState ^. certPStateL)
+    poolKey poolId = ckaKey $ Map.findWithDefault (initialColdKeyAuthority poolId) poolId authorities
 
 voterWitnesses ::
   ConwayEraTxBody era =>
+  (KeyHash StakePool -> KeyHash StakePool) ->
   TxBody l era ->
   Set.Set (KeyHash Witness)
-voterWitnesses txb =
+voterWitnesses poolKey txb =
   Map.foldrWithKey' accum mempty (unVotingProcedures (txb ^. votingProceduresTxBodyL))
   where
     accum voter _ khs =
@@ -191,4 +202,4 @@ voterWitnesses txb =
         case voter of
           CommitteeVoter cred -> credKeyHashWitness cred
           DRepVoter cred -> credKeyHashWitness cred
-          StakePoolVoter poolId -> Just $ asWitness poolId
+          StakePoolVoter poolId -> Just $ asWitness (poolKey poolId)

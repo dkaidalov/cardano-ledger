@@ -13,6 +13,7 @@ module Cardano.Protocol.TPraos.OCert (
   OCertEnv (..),
   OCertSignable (..),
   ocertToSignable,
+  ocertForPoolToSignable,
   currentIssueNo,
   KESPeriod (..),
   slotsPerKESPeriod,
@@ -37,6 +38,7 @@ import Cardano.Ledger.Binary (
   encodeFixedSized,
   fixedSize,
   runByteBuilder,
+  serialize',
  )
 import Cardano.Ledger.Keys (
   DSIGN,
@@ -137,8 +139,12 @@ kesPeriod (SlotNo s) =
 -- | Signable part of an operational certificate
 data OCertSignable c
   = OCertSignable !(KES.VerKeyKES (KES c)) !Word64 !KESPeriod
+  | OCertSignableForPool !(KeyHash StakePool) !Word64 !(KES.VerKeyKES (KES c)) !Word64 !KESPeriod
 
 instance Crypto c => SignableRepresentation (OCertSignable c) where
+  getSignableRepresentation (OCertSignableForPool poolId generation vk counter period) =
+    "Cardano.ColdKeyRotation.OCert.v1" <> serialize' (natVersion @9) (poolId, generation)
+      <> getSignableRepresentation (OCertSignable vk counter period :: OCertSignable c)
   getSignableRepresentation (OCertSignable vk counter period) =
     runByteBuilder
       ( fromIntegral $
@@ -149,6 +155,13 @@ instance Crypto c => SignableRepresentation (OCertSignable c) where
       $ BS.byteStringCopy (rawEncodeFixedSized vk)
         <> BS.word64BE counter
         <> BS.word64BE (fromIntegral $ unKESPeriod period)
+
+-- | Bind rotated certificates to their permanent pool ID and authority generation.
+-- Generation zero preserves the existing certificate signing format.
+ocertForPoolToSignable :: KeyHash StakePool -> Word64 -> OCert c -> OCertSignable c
+ocertForPoolToSignable poolId generation oc
+  | generation == 0 = ocertToSignable oc
+  | otherwise = OCertSignableForPool poolId generation (ocertVkHot oc) (ocertN oc) (ocertKESPeriod oc)
 
 -- | Extract the signable part of an operational certificate (for verification)
 ocertToSignable :: OCert c -> OCertSignable c

@@ -10,6 +10,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -26,6 +27,7 @@ module Cardano.Ledger.Shelley.Rules.Pool (
 import Cardano.Crypto.Hash.Class (hashSize)
 import Cardano.Ledger.BaseTypes (
   EpochNo,
+  EpochInterval (..),
   Globals (..),
   Mismatch (..),
   Network,
@@ -35,6 +37,7 @@ import Cardano.Ledger.BaseTypes (
   invalidKey,
   knownNonZeroBounded,
   networkId,
+  epochInfoPure,
  )
 import Cardano.Ledger.Binary (
   DecCBOR (..),
@@ -52,6 +55,7 @@ import Cardano.Ledger.Shelley.Era (
   hardforkConwayDisallowDuplicatedVRFKeys,
  )
 import qualified Cardano.Ledger.Shelley.SoftForks as SoftForks
+import Cardano.Ledger.Slot (EpochSize (..), epochInfoSize)
 import Cardano.Ledger.State
 import Control.DeepSeq
 import Control.Monad (forM_, when)
@@ -61,6 +65,7 @@ import Control.State.Transition (
   TRC (..),
   TransitionRule,
   judgmentContext,
+  failBecause,
   liftSTS,
   tellEvent,
   (?!),
@@ -111,6 +116,7 @@ data ShelleyPoolPredFailure era
       (KeyHash StakePool)
       -- | VRF key attempted to use, that has already been registered
       (VRFVerKeyHash StakePoolVRF)
+  | InvalidColdKeyRotationPOOL (KeyHash StakePool)
   deriving (Eq, Show, Generic)
 
 type instance EraRuleFailure "POOL" ShelleyEra = ShelleyPoolPredFailure ShelleyEra
@@ -166,6 +172,8 @@ instance Era era => EncCBOR (ShelleyPoolPredFailure era) where
       encodeListLen 4 <> encCBOR (4 :: Word8) <> encCBOR expected <> encCBOR supplied <> encCBOR c
     PoolMedataHashTooBig a b ->
       encodeListLen 3 <> encCBOR (5 :: Word8) <> encCBOR a <> encCBOR b
+    InvalidColdKeyRotationPOOL poolId ->
+      encodeListLen 2 <> encCBOR (7 :: Word8) <> encCBOR poolId
     VRFKeyHashAlreadyRegistered a b ->
       encodeListLen 3 <> encCBOR (6 :: Word8) <> encCBOR a <> encCBOR b
 
@@ -204,6 +212,7 @@ instance Era era => DecCBOR (ShelleyPoolPredFailure era) where
         poolID <- decCBOR
         vrfKeyHash <- decCBOR
         pure (3, VRFKeyHashAlreadyRegistered poolID vrfKeyHash)
+      7 -> (2,) <$> (InvalidColdKeyRotationPOOL <$> decCBOR)
       k -> invalidKey k
 
 poolTransition ::
@@ -221,10 +230,30 @@ poolTransition ::
 poolTransition = do
   TRC
     ( PoolEnv cEpoch pp
-      , ps@PState {psStakePools, psFutureStakePoolParams, psVRFKeyHashes}
-      , poolCert
+      , originalState
+      , originalCert
       ) <-
     judgmentContext
+  -- Rotation extends re-registration. Ordinary pool parameters retain their
+  -- existing activation schedule; cold authority has its own longer delay.
+  (ps@PState {psStakePools, psFutureStakePoolParams, psVRFKeyHashes}, poolCert) <-
+    case originalCert of
+      RegPoolWithRotation params rotation -> do
+        let poolId = sppId params
+            authority = Map.findWithDefault (initialColdKeyAuthority poolId) poolId (psColdKeys originalState)
+        Map.member poolId (psStakePools originalState)
+          ?! injectFailure (InvalidColdKeyRotationPOOL poolId)
+        ei <- liftSTS $ asks epochInfoPure
+        window <- liftSTS $ asks stabilityWindow
+        let EpochSize nextEpochSize = epochInfoSize ei (addEpochInterval cEpoch (EpochInterval 1))
+        nextEpochSize > window ?! injectFailure (InvalidColdKeyRotationPOOL poolId)
+        case scheduleColdKeyRotation cEpoch rotation authority of
+          Nothing -> do
+            failBecause $ injectFailure (InvalidColdKeyRotationPOOL poolId)
+            pure (originalState, RegPool params)
+          Just updated -> pure
+            (originalState & psColdKeysL %~ Map.insert poolId updated, RegPool params)
+      _ -> pure (originalState, originalCert)
   case poolCert of
     RegPool stakePoolParams@StakePoolParams {sppId, sppVrf, sppAccountAddress, sppMetadata, sppCost} -> do
       let pv = pp ^. ppProtocolVersionL
@@ -304,6 +333,9 @@ poolTransition = do
                 %~ Map.insert sppId stakePoolParams
               & psRetiringL %~ Map.delete sppId
               & psVRFKeyHashesL %~ updateFutureVRFKeyHash
+    RegPoolWithRotation params _ -> do
+      failBecause $ injectFailure (InvalidColdKeyRotationPOOL (sppId params))
+      pure ps
     RetirePool sppId e -> do
       Map.member sppId psStakePools ?! injectFailure (StakePoolNotRegisteredOnKeyPOOL sppId)
       let maxEpoch = pp ^. ppEMaxL

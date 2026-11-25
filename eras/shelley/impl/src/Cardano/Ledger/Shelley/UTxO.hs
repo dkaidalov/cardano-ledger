@@ -26,6 +26,7 @@ module Cardano.Ledger.Shelley.UTxO (
   getShelleyMinFeeTxUtxo,
   getShelleyWitsVKeyNeeded,
   getShelleyWitsVKeyNeededNoGov,
+  getShelleyWitsVKeyNeededNoGovWithPoolKey,
   module UTxO,
 ) where
 
@@ -207,7 +208,16 @@ getShelleyWitsVKeyNeededNoGov ::
   UTxO era ->
   TxBody l era ->
   Set (KeyHash Witness)
-getShelleyWitsVKeyNeededNoGov utxo' txBody =
+getShelleyWitsVKeyNeededNoGov = getShelleyWitsVKeyNeededNoGovWithPoolKey id
+
+-- | Resolve only pool certificate authorities, never arbitrary witness hashes.
+getShelleyWitsVKeyNeededNoGovWithPoolKey ::
+  EraTx era =>
+  (KeyHash StakePool -> KeyHash StakePool) ->
+  UTxO era ->
+  TxBody l era ->
+  Set (KeyHash Witness)
+getShelleyWitsVKeyNeededNoGovWithPoolKey poolKey utxo' txBody =
   certAuthors
     `Set.union` inputAuthors
     `Set.union` owners
@@ -246,9 +256,13 @@ getShelleyWitsVKeyNeededNoGov utxo' txBody =
     certAuthors = foldr' accum Set.empty (txBody ^. certsTxBodyL)
       where
         accum cert !ans =
-          case getVKeyWitnessTxCert cert of
-            Nothing -> ans
-            Just vkeyWit -> Set.insert vkeyWit ans
+          case getPoolCertTxCert cert of
+            Just (RegPool params) -> Set.insert (asWitness (poolKey (sppId params))) ans
+            Just (RegPoolWithRotation params _) -> Set.insert (asWitness (poolKey (sppId params))) ans
+            Just (RetirePool poolId _) -> Set.insert (asWitness (poolKey poolId)) ans
+            Nothing -> case getVKeyWitnessTxCert cert of
+              Nothing -> ans
+              Just vkeyWit -> Set.insert vkeyWit ans
 
 getShelleyWitsVKeyNeeded ::
   (EraTx era, ShelleyEraTxBody era, EraCertState era, STxLevel l era ~ STxTopLevel l era) =>

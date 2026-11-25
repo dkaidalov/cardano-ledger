@@ -132,7 +132,7 @@ poolReapTransition :: forall era. EraCertState era => TransitionRule (POOLREAP e
 poolReapTransition = do
   TRC (_, PoolreapState us a cs0, e) <- judgmentContext
   let
-    ps0 = cs0 ^. certPStateL
+    ps0 = (cs0 ^. certPStateL) & psColdKeysL %~ Map.map (activateColdKeyAuthority e)
     -- find the set of VRF key hashes that are no longer relevant, since they have been overwritten
     -- via pool re-registration
     danglingVRFKeyHashes =

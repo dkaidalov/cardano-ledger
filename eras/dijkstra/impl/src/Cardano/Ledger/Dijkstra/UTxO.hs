@@ -144,7 +144,7 @@ instance EraUTxO DijkstraEra where
 
   getScriptsHashesNeeded = getAlonzoScriptsHashesNeeded
 
-  getWitsVKeyNeeded _ = getConwayWitsVKeyNeeded
+  getWitsVKeyNeeded = getConwayWitsVKeyNeeded
 
   getMinFeeTxUtxo = getConwayMinFeeTxUtxo
 

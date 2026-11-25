@@ -20,6 +20,7 @@ import Cardano.Ledger.Shelley.API.Forecast (EraForecast (..))
 instance EraForecast ConwayEra where
   type Forecast t ConwayEra = BabbageForecast t ConwayEra
   mkForecast = mkBabbageForecast
+  coldKeysForecast = bfColdKeys
   poolDistrForecastL = bfPoolDistrL
   maxBlockHeaderSizeForecastL = bfMaxBlockHeaderSizeL
   maxBlockBodySizeForecastL = bfMaxBlockBodySizeL
