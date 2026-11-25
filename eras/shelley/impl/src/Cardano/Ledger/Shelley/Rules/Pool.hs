@@ -27,7 +27,6 @@ module Cardano.Ledger.Shelley.Rules.Pool (
 import Cardano.Crypto.Hash.Class (hashSize)
 import Cardano.Ledger.BaseTypes (
   EpochNo,
-  EpochInterval (..),
   Globals (..),
   Mismatch (..),
   Network,
@@ -245,8 +244,10 @@ poolTransition = do
           ?! injectFailure (InvalidColdKeyRotationPOOL poolId)
         ei <- liftSTS $ asks epochInfoPure
         window <- liftSTS $ asks stabilityWindow
-        let EpochSize nextEpochSize = epochInfoSize ei (addEpochInterval cEpoch (EpochInterval 1))
-        nextEpochSize > window ?! injectFailure (InvalidColdKeyRotationPOOL poolId)
+        -- Conway's epoch length is fixed by genesis. Asking for the next
+        -- epoch here can exceed consensus's current forecast horizon.
+        let EpochSize epochSize = epochInfoSize ei cEpoch
+        epochSize > window ?! injectFailure (InvalidColdKeyRotationPOOL poolId)
         case scheduleColdKeyRotation cEpoch rotation authority of
           Nothing -> do
             failBecause $ injectFailure (InvalidColdKeyRotationPOOL poolId)
