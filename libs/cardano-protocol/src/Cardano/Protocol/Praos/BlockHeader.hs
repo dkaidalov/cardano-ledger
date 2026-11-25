@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -Wno-partial-fields #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -33,6 +34,7 @@ module Cardano.Protocol.Praos.BlockHeader (
   headerSize,
 ) where
 
+import Cardano.Ledger.State.ColdKey (ColdWitness)
 import qualified Cardano.Crypto.DSIGN as DSIGN
 import qualified Cardano.Crypto.Hash as Hash
 import qualified Cardano.Crypto.KES as KES
@@ -46,6 +48,8 @@ import Cardano.Ledger.Binary (
   DecCBOR (decCBOR),
   EncCBOR (..),
   decodeFixedSized,
+  decodeListLen,
+  encodeListLen,
   encodeFixedSized,
   serialize',
  )
@@ -89,6 +93,7 @@ data OCertAuth crypto = OCertAuth
   { oaColdKey :: !(VKey BlockIssuer)
   , oaColdSig :: !(DSIGN.SignedDSIGN DSIGN (OCertSignable crypto))
   }
+  | OCertAuthMLDSA44 !ColdWitness
   deriving (Generic)
 
 deriving instance Crypto crypto => Show (OCertAuth crypto)
@@ -101,8 +106,15 @@ instance Crypto crypto => EncCBOR (OCertAuth crypto) where
   encCBOR OCertAuth {oaColdKey, oaColdSig} =
     encode $ Rec OCertAuth !> To oaColdKey !> E encodeFixedSized oaColdSig
 
+  encCBOR (OCertAuthMLDSA44 witness) = encodeListLen 1 <> encCBOR witness
+
 instance Crypto crypto => DecCBOR (OCertAuth crypto) where
-  decCBOR = decode $ RecD OCertAuth <! From <! D decodeFixedSized
+  decCBOR = do
+    len <- decodeListLen
+    case len of
+      2 -> OCertAuth <$> decCBOR <*> decodeFixedSized
+      1 -> OCertAuthMLDSA44 <$> decCBOR
+      _ -> fail "Invalid cold authentication"
 
 -- | Header representation of an operational certificate. The hot KES key,
 -- counter and start period are always present, so the header's KES signature
@@ -139,6 +151,8 @@ instance Crypto crypto => DecCBOR (HeaderOCert crypto) where
 mkHeaderOCert :: VKey BlockIssuer -> OCert crypto -> HeaderOCert crypto
 mkHeaderOCert vk (OCert hotKey counter startPeriod sig) =
   HeaderOCert hotKey counter startPeriod (SJust (OCertAuth vk sig))
+mkHeaderOCert _ (OCertMLDSA44 hotKey counter startPeriod witness) =
+  HeaderOCert hotKey counter startPeriod (SJust (OCertAuthMLDSA44 witness))
 
 -- | The body of the header is the part signed by the KES key.
 data HeaderBody crypto = HeaderBody

@@ -75,7 +75,10 @@ ocertTransition ::
   TransitionRule (OCERT c)
 ocertTransition =
   judgmentContext >>= \(TRC (env, cs, BHeader bhb sigma)) -> do
-    let OCert vk_hot n c0@(KESPeriod c0_) tau = bheaderOCert bhb
+    let oc = bheaderOCert bhb
+        vk_hot = ocertVkHot oc
+        n = ocertN oc
+        c0@(KESPeriod c0_) = ocertKESPeriod oc
         vkcold = bheaderVk bhb
         hk = hashKey vkcold
         s = bheaderSlotNo bhb
@@ -95,7 +98,9 @@ ocertTransition =
     -- above `KESBeforeStartOCERT`
     -- predicate failure in the
     -- transition.
-    verifySignedDSIGN vkcold (ocertToSignable $ bheaderOCert bhb) tau ?! InvalidSignatureOCERT n c0
+    (case oc of
+      OCert _ _ _ tau -> verifySignedDSIGN vkcold (ocertToSignable oc) tau
+      OCertMLDSA44 {} -> False) ?! InvalidSignatureOCERT n c0
     verifySignedKES () vk_hot t bhb sigma ?!: InvalidKesSignatureOCERT kp_ c0_ t
 
     case currentIssueNo env cs hk of

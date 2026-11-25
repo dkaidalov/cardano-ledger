@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -Wno-partial-fields #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
@@ -20,6 +21,7 @@ module Cardano.Protocol.TPraos.OCert (
   kesPeriod,
 ) where
 
+import Cardano.Ledger.State.ColdKey (ColdWitness, ColdScheme (..))
 import qualified Cardano.Crypto.DSIGN as DSIGN
 import Cardano.Crypto.KES (KESAlgorithm (..))
 import qualified Cardano.Crypto.KES as KES
@@ -35,6 +37,8 @@ import Cardano.Ledger.Binary (
   Encoding,
   FixedSizeCodec (..),
   decodeFixedSized,
+  peekTokenType,
+  TokenType (..),
   encodeFixedSized,
   fixedSize,
   runByteBuilder,
@@ -93,6 +97,12 @@ data OCert c = OCert
   , ocertSigma :: !(DSIGN.SignedDSIGN DSIGN (OCertSignable c))
   -- ^ Signature of block operational certificate content
   }
+  | OCertMLDSA44
+  { ocertVkHot :: !(KES.VerKeyKES (KES c))
+  , ocertN :: !Word64
+  , ocertKESPeriod :: !KESPeriod
+  , ocertColdWitness :: !ColdWitness
+  }
   deriving (Generic)
   deriving (EncCBOR) via (CBORGroup (OCert c))
   deriving (DecCBOR) via (CBORGroup (OCert c))
@@ -119,15 +129,20 @@ encodeOCertFields ocert =
   encodeFixedSized (ocertVkHot ocert)
     <> encCBOR (ocertN ocert)
     <> encCBOR (ocertKESPeriod ocert)
-    <> encodeFixedSized (ocertSigma ocert)
+    <> case ocert of
+      OCert _ _ _ sig -> encodeFixedSized sig
+      OCertMLDSA44 _ _ _ witness -> encCBOR witness
 
 decodeOCertFields :: Crypto c => Decoder s (OCert c)
-decodeOCertFields =
-  OCert
-    <$> decodeFixedSized
-    <*> decCBOR
-    <*> (KESPeriod <$> decCBOR)
-    <*> decodeFixedSized
+decodeOCertFields = do
+  hot <- decodeFixedSized
+  counter <- decCBOR
+  period <- KESPeriod <$> decCBOR
+  token <- peekTokenType
+  case token of
+    TypeBytes -> OCert hot counter period <$> decodeFixedSized
+    TypeListLen -> OCertMLDSA44 hot counter period <$> decCBOR
+    _ -> fail "Invalid operational certificate authentication"
 
 kesPeriod :: SlotNo -> ShelleyBase KESPeriod
 kesPeriod (SlotNo s) =
@@ -139,9 +154,13 @@ kesPeriod (SlotNo s) =
 -- | Signable part of an operational certificate
 data OCertSignable c
   = OCertSignable !(KES.VerKeyKES (KES c)) !Word64 !KESPeriod
+  | OCertSignableForScheme !ColdScheme !(KeyHash StakePool) !Word64 !(KES.VerKeyKES (KES c)) !Word64 !KESPeriod
   | OCertSignableForPool !(KeyHash StakePool) !Word64 !(KES.VerKeyKES (KES c)) !Word64 !KESPeriod
 
 instance Crypto c => SignableRepresentation (OCertSignable c) where
+  getSignableRepresentation (OCertSignableForScheme scheme poolId generation vk counter period) =
+    "Cardano.ColdKeyRotation.OCert.v2" <> serialize' (natVersion @9) (scheme, poolId, generation)
+      <> getSignableRepresentation (OCertSignable vk counter period :: OCertSignable c)
   getSignableRepresentation (OCertSignableForPool poolId generation vk counter period) =
     "Cardano.ColdKeyRotation.OCert.v1" <> serialize' (natVersion @9) (poolId, generation)
       <> getSignableRepresentation (OCertSignable vk counter period :: OCertSignable c)
@@ -160,10 +179,11 @@ instance Crypto c => SignableRepresentation (OCertSignable c) where
 -- Generation zero preserves the existing certificate signing format.
 ocertForPoolToSignable :: KeyHash StakePool -> Word64 -> OCert c -> OCertSignable c
 ocertForPoolToSignable poolId generation oc
+  | OCertMLDSA44 {} <- oc = OCertSignableForScheme ColdMLDSA44 poolId generation (ocertVkHot oc) (ocertN oc) (ocertKESPeriod oc)
   | generation == 0 = ocertToSignable oc
   | otherwise = OCertSignableForPool poolId generation (ocertVkHot oc) (ocertN oc) (ocertKESPeriod oc)
 
 -- | Extract the signable part of an operational certificate (for verification)
 ocertToSignable :: OCert c -> OCertSignable c
-ocertToSignable OCert {ocertVkHot, ocertN, ocertKESPeriod} =
-  OCertSignable ocertVkHot ocertN ocertKESPeriod
+ocertToSignable oc =
+  OCertSignable (ocertVkHot oc) (ocertN oc) (ocertKESPeriod oc)
