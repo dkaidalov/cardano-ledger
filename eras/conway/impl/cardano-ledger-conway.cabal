@@ -326,3 +326,30 @@ test-suite tests
     cardano-ledger-core:{cardano-ledger-core, testlib},
     cardano-ledger-shelley:testlib,
     testlib,
+
+-- Focused regression suite for pool cold-authority migration.
+test-suite cold-key-rotation
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  hs-source-dirs: test/cold-key-rotation
+  default-language: Haskell2010
+  ghc-options: -Wall -threaded -rtsopts
+  build-depends:
+    base,
+    bytestring,
+    cardano-crypto-class,
+    cardano-ledger-alonzo,
+    cardano-ledger-binary,
+    cardano-ledger-conway,
+    cardano-ledger-core,
+    cardano-ledger-shelley,
+    cardano-slotting,
+    cardano-strict-containers,
+    containers,
+    data-default,
+    hspec,
+    microlens,
+    mtl,
+    small-steps,
+    time,
+    validation-selective,
