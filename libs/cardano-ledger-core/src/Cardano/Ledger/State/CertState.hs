@@ -46,6 +46,7 @@ module Cardano.Ledger.State.CertState (
   psStakePoolsL,
   psFutureStakePoolParamsL,
   psRetiringL,
+  psColdKeysL,
   psVRFKeyHashesL,
 ) where
 
@@ -68,6 +69,7 @@ import Cardano.Ledger.Binary (
   decSharePlusLensCBOR,
   decodeRecordNamed,
   decodeRecordNamedT,
+  decodeListLen,
   encodeListLen,
   internsFromSet,
   toMemptyLens,
@@ -81,6 +83,7 @@ import Cardano.Ledger.DRep (DRep (..), DRepState (..))
 import Cardano.Ledger.Hashes (GenDelegPair (..), GenDelegs (..))
 import Cardano.Ledger.Slot (EpochNo (..), SlotNo (..))
 import Cardano.Ledger.State.Account
+import Cardano.Ledger.State.ColdKey (ColdKeyAuthority)
 import Cardano.Ledger.State.StakePool (StakePoolParams, StakePoolState (..), spsDelegatorsL)
 import Control.DeepSeq (NFData (..))
 import Control.Monad.Trans
@@ -240,6 +243,8 @@ data PState era = PState
   -- to give delegators time to react to changes.
   -- See section 11.2, "Example Illustration of the Reward Cycle",
   -- of the Shelley Ledger Specification for a sequence diagram.
+  , psColdKeys :: !(Map (KeyHash StakePool) ColdKeyAuthority)
+  -- ^ Permanent authority records, retained after retirement to prevent old-key recovery.
   , psRetiring :: !(Map (KeyHash StakePool) EpochNo)
   -- ^ A map of retiring stake pools to the epoch when they retire.
   }
@@ -251,18 +256,22 @@ instance NoThunks (PState era)
 instance NFData (PState era)
 
 instance Era era => EncCBOR (PState era) where
-  encCBOR (PState a b c d) =
-    encodeListLen 4 <> encCBOR a <> encCBOR b <> encCBOR c <> encCBOR d
+  encCBOR (PState a b c coldKeys retiring)
+    | Map.null coldKeys = encodeListLen 4 <> encCBOR a <> encCBOR b <> encCBOR c <> encCBOR retiring
+    | otherwise = encodeListLen 5 <> encCBOR a <> encCBOR b <> encCBOR c <> encCBOR retiring <> encCBOR coldKeys
 
 instance DecShareCBOR (PState era) where
   type Share (PState era) = (Interns (VRFVerKeyHash StakePoolVRF), Interns (KeyHash StakePool))
 
-  decSharePlusCBOR = decodeRecordNamedT "PState" (const 4) $ do
+  decSharePlusCBOR = do
+    len <- lift decodeListLen
+    if len == 4 || len == 5 then pure () else fail "PState: expected 4 or 5 fields"
     psVRFKeyHashes <- decSharePlusLensCBOR (toMemptyLens _1 _1)
     psStakePools <- decSharePlusLensCBOR (toMemptyLens _1 _2)
     psFutureStakePoolParams <- decSharePlusLensCBOR (toMemptyLens _1 _2)
     psRetiring <- decSharePlusLensCBOR (toMemptyLens _1 _2)
-    pure PState {psVRFKeyHashes, psStakePools, psFutureStakePoolParams, psRetiring}
+    psColdKeys <- if len == 5 then lift decCBOR else pure Map.empty
+    pure PState {psVRFKeyHashes, psStakePools, psFutureStakePoolParams, psColdKeys, psRetiring}
 
 instance (Era era, DecShareCBOR (PState era)) => DecCBOR (PState era) where
   decCBOR = decNoShareCBOR
@@ -272,6 +281,7 @@ instance ToKeyValuePairs (PState era) where
     [ "vrfKeyHashes" .= psVRFKeyHashes
     , "stakePools" .= psStakePools
     , "futureStakePoolParams" .= psFutureStakePoolParams
+    , "coldKeys" .= psColdKeys
     , "retiring" .= psRetiring
     ]
 
@@ -421,7 +431,7 @@ instance Default (Accounts era) => Default (DState era) where
   def = DState def Map.empty (GenDelegs Map.empty) def
 
 instance Default (PState era) where
-  def = PState Map.empty Map.empty Map.empty Map.empty
+  def = PState Map.empty Map.empty Map.empty Map.empty Map.empty
 
 -- | A composite of all the Deposits the system is obligated to eventually pay back.
 data Obligations = Obligations
@@ -486,6 +496,9 @@ psStakePoolsL = lens psStakePools (\ps u -> ps {psStakePools = u})
 
 psFutureStakePoolParamsL :: Lens' (PState era) (Map (KeyHash StakePool) StakePoolParams)
 psFutureStakePoolParamsL = lens psFutureStakePoolParams (\ps u -> ps {psFutureStakePoolParams = u})
+
+psColdKeysL :: Lens' (PState era) (Map (KeyHash StakePool) ColdKeyAuthority)
+psColdKeysL = lens psColdKeys (\ps u -> ps {psColdKeys = u})
 
 psRetiringL :: Lens' (PState era) (Map (KeyHash StakePool) EpochNo)
 psRetiringL = lens psRetiring (\ps u -> ps {psRetiring = u})

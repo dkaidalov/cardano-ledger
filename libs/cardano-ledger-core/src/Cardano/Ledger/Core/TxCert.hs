@@ -31,6 +31,7 @@ import Cardano.Ledger.Credential (Credential (..))
 import Cardano.Ledger.Hashes (ScriptHash)
 import Cardano.Ledger.Keys (KeyHash (..), KeyRole (..), asWitness)
 import Cardano.Ledger.Slot (EpochNo (..))
+import Cardano.Ledger.State.ColdKey (ColdKeyRotation)
 import Cardano.Ledger.State.StakePool (StakePoolParams (sppId))
 import Control.DeepSeq (NFData (..), rwhnf)
 import Data.Aeson (ToJSON (..), (.=))
@@ -78,6 +79,9 @@ class
   mkRegPoolTxCert :: StakePoolParams -> TxCert era
   getRegPoolTxCert :: TxCert era -> Maybe StakePoolParams
 
+  getPoolColdKeyRotation :: TxCert era -> Maybe ColdKeyRotation
+  getPoolColdKeyRotation _ = Nothing
+
   mkRetirePoolTxCert :: KeyHash StakePool -> EpochNo -> TxCert era
   getRetirePoolTxCert :: TxCert era -> Maybe (KeyHash StakePool, EpochNo)
 
@@ -121,13 +125,15 @@ pattern RetirePoolTxCert poolId epochNo <- (getRetirePoolTxCert -> Just (poolId,
 
 getPoolCertTxCert :: EraTxCert era => TxCert era -> Maybe PoolCert
 getPoolCertTxCert = \case
-  RegPoolTxCert poolParams -> Just $ RegPool poolParams
+  cert@(RegPoolTxCert poolParams) -> Just $
+    maybe (RegPool poolParams) (RegPoolWithRotation poolParams) (getPoolColdKeyRotation cert)
   RetirePoolTxCert poolId epochNo -> Just $ RetirePool poolId epochNo
   _ -> Nothing
 
 data PoolCert
   = -- | A stake pool registration certificate.
     RegPool !StakePoolParams
+  | RegPoolWithRotation !StakePoolParams !ColdKeyRotation
   | -- | A stake pool retirement certificate.
     RetirePool !(KeyHash StakePool) !EpochNo
   deriving (Show, Generic, Eq, Ord)
@@ -141,6 +147,8 @@ instance ToJSON PoolCert where
   toJSON = \case
     RegPool poolParams ->
       kindObjectValue "RegPool" ["poolParams" .= toJSON poolParams]
+    RegPoolWithRotation poolParams rotation ->
+      kindObjectValue "RegPoolWithRotation" ["poolParams" .= poolParams, "rotation" .= rotation]
     RetirePool poolId epochNo ->
       kindObjectValue
         "RetirePool"
@@ -151,6 +159,7 @@ instance ToJSON PoolCert where
 poolCertKeyHashWitness :: PoolCert -> KeyHash Witness
 poolCertKeyHashWitness = \case
   RegPool stakePoolParams -> asWitness $ sppId stakePoolParams
+  RegPoolWithRotation stakePoolParams _ -> asWitness $ sppId stakePoolParams
   RetirePool poolId _ -> asWitness poolId
 
 -- | Check if supplied TxCert is a stake registering certificate

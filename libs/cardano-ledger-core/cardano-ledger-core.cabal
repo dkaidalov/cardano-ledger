@@ -85,6 +85,7 @@ library
     Cardano.Ledger.Rules.ValidationMode
     Cardano.Ledger.Slot
     Cardano.Ledger.State
+    Cardano.Ledger.State.ColdKey
     Cardano.Ledger.Tools
     Cardano.Ledger.TxIn
     Cardano.Ledger.Val

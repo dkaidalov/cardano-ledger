@@ -282,6 +282,12 @@ instance ToExpr StakeWithDelegation
 
 deriving newtype instance ToExpr ActiveStake
 
+instance ToExpr ColdKeyAuthority
+
+instance ToExpr PendingColdKey
+
+instance ToExpr ColdKeyRotation
+
 instance ToExpr (PState era)
 
 instance ToExpr (Accounts era) => ToExpr (DState era)
